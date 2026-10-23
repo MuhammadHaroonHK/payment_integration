@@ -88,7 +88,7 @@ export default function Navbar() {
             ))}
           </ul>
           <p className="border-t border-slate-100 px-3 pb-2 pt-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">
-            {PAYMENT_CONFIG.isMock ? 'Demo mode — simulated payments' : 'Backend mode — live API'}
+            {PAYMENT_CONFIG.isMock ? 'Demo mode — simulated payments' : 'Backend mode — server API'}
           </p>
         </nav>
       ) : null}

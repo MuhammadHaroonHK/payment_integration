@@ -141,6 +141,8 @@ export function toFrontendTransaction(transaction) {
     reason: transaction.failureReason || '',
     mode: transaction.mode,
     simulated: transaction.simulated !== false,
+    gatewayVerified: Boolean(transaction.gatewayVerified),
+    gatewayEnvironment: transaction.gatewayEnvironment ?? null,
     // The provider's own transaction id. This is the field a real integration
     // uses for reconciliation, refunds and support tickets, so it must not be
     // dropped on the way to the UI.

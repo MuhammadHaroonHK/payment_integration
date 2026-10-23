@@ -4,7 +4,7 @@ import { getStatusStyle } from '../../utils/transactionHelpers'
 /**
  * StatusBadge
  *
- * Shows the status of a simulated transaction.
+ * Shows the status of a transaction.
  *   - Success  -> restrained brand green
  *   - Failed   -> red
  *   - Pending  -> neutral slate

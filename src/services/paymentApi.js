@@ -37,17 +37,25 @@ import {
 /**
  * Create a payment.
  *
+ * Returns the transaction and, in live mode, the redirect the browser has to
+ * perform to reach the gateway's hosted checkout page:
+ *
+ *   { transaction, redirect: { url, method, fields } | null }
+ *
+ * In mock mode there is never a redirect — the simulator answers immediately.
+ *
  * @param {object} payload
  * @param {object} payload.order     order details (order number, product, unit price...)
  * @param {object} payload.totals    calculated amounts (subtotal, service fee, total)
  * @param {object} payload.customer  customer details (name, email, mobile)
  * @param {string} payload.gateway   'jazzcash' | 'easypaisa'
  * @param {string} [payload.simulatedOutcome] only used by the mock service
- * @returns {Promise<object>} the created transaction
+ * @returns {Promise<{transaction: object, redirect: object|null}>}
  */
 export async function createPayment(payload) {
   if (PAYMENT_CONFIG.isMock) {
-    return createMockPayment(payload)
+    const transaction = await createMockPayment(payload)
+    return { transaction, redirect: null }
   }
 
   const response = await apiClient.post('/payments/create', {
@@ -60,7 +68,12 @@ export async function createPayment(payload) {
     simulatedOutcome: toBackendOutcome(payload.simulatedOutcome),
   })
 
-  return toFrontendTransaction(unwrap(response))
+  const body = response?.data ?? {}
+
+  return {
+    transaction: toFrontendTransaction(unwrap(response)),
+    redirect: body.redirect ?? null,
+  }
 }
 
 /**
@@ -122,19 +135,39 @@ export async function getTransactionDetails(transactionId) {
  * The backend creates a fresh, single use order from its own catalogue, so
  * the price the customer sees can never be changed in the browser.
  *
- * @returns {Promise<{order: object, testControlsEnabled: boolean}>}
+ * It also reports whether the server is running the simulator or the real
+ * gateways, and which gateways have credentials. That is what lets the UI say
+ * "you will be redirected to JazzCash" and disable an unconfigured method.
+ *
+ * @returns {Promise<{
+ *   order: object,
+ *   testControlsEnabled: boolean,
+ *   mode: 'MOCK'|'LIVE',
+ *   gatewayCapabilities: {jazzcash: boolean, easypaisa: boolean}
+ * }>}
  */
 export async function getDemoOrder(quantity = 1) {
   if (PAYMENT_CONFIG.isMock) {
-    return { order: null, testControlsEnabled: true }
+    return {
+      order: null,
+      testControlsEnabled: true,
+      mode: 'MOCK',
+      gatewayCapabilities: { jazzcash: true, easypaisa: true },
+    }
   }
 
   const response = await apiClient.get('/orders/demo', { params: { quantity } })
   const body = response?.data ?? {}
+  const gateways = body.capabilities?.gateways ?? {}
 
   return {
     order: toFrontendOrder(body.data),
     testControlsEnabled: Boolean(body.capabilities?.testControlsEnabled),
+    mode: body.capabilities?.mode === 'LIVE' ? 'LIVE' : 'MOCK',
+    gatewayCapabilities: {
+      jazzcash: gateways.jazzcash !== false,
+      easypaisa: gateways.easypaisa !== false,
+    },
   }
 }
 

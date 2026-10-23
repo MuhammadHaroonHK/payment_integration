@@ -38,6 +38,8 @@ export function usePayment() {
     orderStatus,
     orderError,
     testControlsEnabled,
+    serverMode,
+    gatewayCapabilities,
   } = context
 
   const selectedGatewayDetails = useMemo(
@@ -72,6 +74,8 @@ export function usePayment() {
     orderStatus,
     orderError,
     testControlsEnabled,
+    serverMode,
+    gatewayCapabilities,
     // derived
     customerErrors,
     isCustomerValid,

@@ -117,7 +117,9 @@ export default function TransactionDetailsModal({ transaction, open = false, onC
   const footer = (
     <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
       <p className="text-[11px] leading-relaxed text-slate-500">
-        Demo record — this is a simulated payment, not a real transfer.
+        {record.simulated === false
+          ? 'Live record — the gateway reference and verification state are shown above.'
+          : 'Demo record — this is a simulated payment, not a real transfer.'}
       </p>
 
       <div className="flex flex-col gap-2 sm:flex-row">
@@ -187,6 +189,20 @@ export default function TransactionDetailsModal({ transaction, open = false, onC
         {gateway ? <DetailRow label="Method detail" value={gateway.detail} /> : null}
         <DetailRow label="Order number" value={order.orderNumber || record.orderNumber || '—'} mono />
         <DetailRow label="Status" value={statusStyle.label} />
+        <DetailRow
+          label="Mode"
+          value={record.mode === 'LIVE' ? 'Live gateway' : 'Simulated'}
+        />
+        {record.mode === 'LIVE' ? (
+          <DetailRow
+            label="Gateway verified"
+            value={
+              record.gatewayVerified
+                ? `Yes${record.gatewayEnvironment ? ` (${record.gatewayEnvironment})` : ''}`
+                : 'No — the unsigned redirect was used'
+            }
+          />
+        ) : null}
         <DetailRow label="Recorded at" value={formatDateTime(record.createdAt)} />
       </DetailSection>
 

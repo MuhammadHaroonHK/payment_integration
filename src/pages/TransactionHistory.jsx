@@ -28,9 +28,9 @@ import {
  * record: customer information, order, money breakdown and the transaction
  * itself.
  *
- * The records come from the local demo store. They are sample data stored in
- * this browser only; a real implementation would read them from a backend
- * database.
+ * The records come from the payment service: the local store in offline mock
+ * mode, or the API in backend mode (which may in turn be running its own mock
+ * gateway or the real hosted checkout).
  */
 export default function TransactionHistory() {
   const [transactions, setTransactions] = useState([])
@@ -111,8 +111,8 @@ export default function TransactionHistory() {
       <header className="border-b border-slate-200 pb-5">
         <h1 className="text-xl font-semibold tracking-tight text-slate-900">Transaction history</h1>
         <p className="mt-1.5 max-w-2xl text-sm text-slate-600">
-          Every simulated transaction created in this browser, newest first — with the customer who
-          made the payment and a details action for every record.
+          Every recorded transaction, newest first — with the customer who made the payment and a
+          details action for every record.
         </p>
       </header>
 
@@ -191,8 +191,8 @@ export default function TransactionHistory() {
                 title={hasActiveFilters ? 'No matching transactions' : 'No transactions yet'}
                 description={
                   hasActiveFilters
-                    ? 'No demo transaction matches the current filters. Try a different search term or clear the filters.'
-                    : 'Complete a demo payment and it will be listed here straight away.'
+                    ? 'No transaction matches the current filters. Try a different search term or clear the filters.'
+                    : 'Complete a payment and it will be listed here straight away.'
                 }
                 action={
                   hasActiveFilters ? (
@@ -200,7 +200,7 @@ export default function TransactionHistory() {
                       Clear filters
                     </Button>
                   ) : (
-                    <Button to="/checkout">Start demo payment</Button>
+                    <Button to="/checkout">Start a payment</Button>
                   )
                 }
               />
@@ -223,10 +223,10 @@ export default function TransactionHistory() {
               </>
             ) : (
               <>
-                <span className="font-medium text-slate-800">Demo records from the API.</span> These
-                transactions are stored in the local MongoDB database by the PayLab server. They
-                are still simulated payments, and the demo API has no authentication, so it must
-                not be exposed publicly.
+                <span className="font-medium text-slate-800">Records from the API.</span> These
+                transactions are stored in MongoDB by the PayLab server. Depending on the server&apos;s
+                PAYMENT_MODE they are simulated or come from the real gateway (sandbox by default).
+                The API has no authentication, so it must not be exposed publicly.
               </>
             )}
           </p>

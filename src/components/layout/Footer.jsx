@@ -36,7 +36,7 @@ export default function Footer() {
           <span className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">
             {PAYMENT_CONFIG.isMock
               ? 'Simulated payments — no real money moves'
-              : 'Backend mode — requests are sent to the API'}
+              : 'Backend mode — payments handled by the API'}
           </span>
         </div>
       </div>

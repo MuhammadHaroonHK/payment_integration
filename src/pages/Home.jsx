@@ -27,8 +27,9 @@ const STEPS = [
     description: 'Check the order, the gateway and the total amount before confirming.',
   },
   {
-    title: 'Simulate result',
-    description: 'The mock gateway returns success, failure, cancelled or pending.',
+    title: 'Complete the payment',
+    description:
+      'In mock mode the gateway returns success, failure, cancelled or pending. In live mode the result comes from JazzCash or Easypaisa.',
   },
 ]
 
@@ -42,8 +43,8 @@ export default function Home() {
         </h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">
           PayLab is a practice environment for learning how a checkout flow is built. Pick one of the
-          supported gateways, complete the order form and confirm a simulated transaction to see the
-          full checkout, review and result flow.
+          supported gateways, complete the order form and continue to the payment to see the full
+          checkout, review and result flow.
         </p>
       </header>
 
@@ -51,11 +52,20 @@ export default function Home() {
       <div className="mt-5 flex items-start gap-2.5 rounded-md border border-amber-300 bg-amber-50 px-4 py-3">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
         <p className="text-[13px] leading-relaxed text-amber-900">
-          <span className="font-semibold">All transactions are simulated.</span> No real money is
-          transferred, no gateway account is used and no JazzCash or Easypaisa API is contacted.{' '}
-          {PAYMENT_CONFIG.isMock
-            ? 'The app is currently running in local mock mode.'
-            : 'The app is configured to send requests to the backend API.'}
+          {PAYMENT_CONFIG.isMock ? (
+            <>
+              <span className="font-semibold">All transactions are simulated.</span> No real money
+              is transferred, no gateway account is used and no JazzCash or Easypaisa API is
+              contacted. The app is running in local mock mode.
+            </>
+          ) : (
+            <>
+              <span className="font-semibold">The payment mode is controlled by the server.</span>{' '}
+              In mock mode nothing leaves the app and no money moves. In live mode you are
+              redirected to JazzCash or Easypaisa (sandbox by default) and the server records the
+              result when you return from the gateway.
+            </>
+          )}
         </p>
       </div>
 

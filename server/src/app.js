@@ -1,4 +1,5 @@
 import express from 'express'
+import crypto from 'node:crypto'
 import helmet from 'helmet'
 import cors from 'cors'
 import morgan from 'morgan'
@@ -26,7 +27,43 @@ export function createApp() {
 
   /* ------------------------------ security ------------------------------ */
 
-  app.use(helmet())
+  /**
+   * A per-request Content-Security-Policy nonce.
+   *
+   * The Easypaisa confirmation step is a tiny HTML page with one inline
+   * script that submits the form. Helmet's default policy blocks inline
+   * scripts, so a nonce is generated for every response and allowed below.
+   */
+  app.use((req, res, next) => {
+    res.locals.cspNonce = crypto.randomBytes(16).toString('base64')
+    next()
+  })
+
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          scriptSrc: ["'self'", (req, res) => `'nonce-${res.locals.cspNonce}'`],
+          /**
+           * The Easypaisa confirmation page posts to the gateway. Helmet's
+           * default `form-action 'self'` would block that navigation.
+           */
+          formAction: [
+            "'self'",
+            'https://sandbox.jazzcash.com.pk',
+            'https://payments.jazzcash.com.pk',
+            'https://easypaystg.easypaisa.com.pk',
+            'https://easypay.easypaisa.com.pk',
+          ],
+          /**
+           * `upgrade-insecure-requests` breaks http://localhost redirects in
+           * development, so it is only enabled in production.
+           */
+          upgradeInsecureRequests: env.NODE_ENV === 'production' ? [] : null,
+        },
+      },
+    }),
+  )
 
   /**
    * CORS with an explicit origin.

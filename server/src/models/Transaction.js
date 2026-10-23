@@ -25,9 +25,11 @@ export const GATEWAY = {
   EASYPAISA: 'EASYPAISA',
 }
 
-/** The only payment mode that exists today. */
 export const TRANSACTION_MODE = {
+  /** Produced by the local simulator — no provider was contacted. */
   MOCK: 'MOCK',
+  /** Produced by a real JazzCash / Easypaisa hosted checkout. */
+  LIVE: 'LIVE',
 }
 
 const transactionSchema = new mongoose.Schema(
@@ -81,8 +83,28 @@ const transactionSchema = new mongoose.Schema(
      */
     gatewayReference: { type: String, default: null, trim: true },
 
+    /**
+     * The reference PayLab sent to the provider (JazzCash pp_TxnRefNo,
+     * Easypaisa orderRefNum). It is the key used to match a callback back to
+     * this transaction, and to ask the provider for the real status.
+     */
+    gatewayTxnRef: { type: String, default: null, trim: true },
+
+    /**
+     * True only when the outcome was confirmed by a verified, signed gateway
+     * callback or by the provider's status inquiry API.
+     */
+    gatewayVerified: { type: Boolean, default: false },
+
+    /** Which gateway environment handled a live transaction. */
+    gatewayEnvironment: {
+      type: String,
+      enum: ['sandbox', 'production', null],
+      default: null,
+    },
+
     /** True while the transaction came from the simulator. */
-    simulated: { type: Boolean, default: true },
+    simulated: { type: Boolean, default: false },
 
     /** Money breakdown that was actually charged (paisa). */
     breakdown: {
@@ -113,6 +135,8 @@ transactionSchema.index({ gateway: 1, status: 1, createdAt: -1 })
 transactionSchema.index({ status: 1, createdAt: -1 })
 transactionSchema.index({ orderNumber: 1, createdAt: -1 })
 transactionSchema.index({ createdAt: -1 })
+// Callback lookup.
+transactionSchema.index({ gatewayTxnRef: 1 })
 
 /**
  * Database level protection against paying the same order twice.

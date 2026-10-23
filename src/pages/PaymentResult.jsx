@@ -9,16 +9,18 @@ import StatusBadge from '../components/common/StatusBadge'
 import { usePayment } from '../hooks/usePayment'
 import { getGatewayById } from '../data/gateways'
 import { getPaymentStatus } from '../services/paymentApi'
+import { PAYMENT_CONFIG } from '../config/paymentConfig'
 import { TRANSACTION_STATUS } from '../utils/transactionHelpers'
 
 /**
  * PaymentResult
  *
- * Step 3 of the demo journey. One layout serves every simulated outcome:
- * success, failure, cancelled and pending.
+ * Step 3 of the checkout journey. One layout serves every outcome: success,
+ * failure, cancelled and pending.
  *
- * The status shown here comes from the mock service (or a real backend in
- * backend mode). PayLab never claims to have verified a real payment.
+ * The status comes from the local simulator, the API's mock gateway or a real
+ * gateway callback, depending on the configured mode. A live result that was
+ * not cryptographically verified is labelled as such.
  */
 
 const RESULT_STATES = {
@@ -62,9 +64,47 @@ const RESULT_STATES = {
   },
 }
 
+/**
+ * Wording for a real gateway transaction. The layout is identical; only the
+ * claims change, so the page never calls a real payment "simulated".
+ */
+const LIVE_STATES = {
+  [TRANSACTION_STATUS.SUCCESS]: {
+    title: 'Payment successful',
+    description:
+      'The gateway confirmed this payment and the order has been marked as paid.',
+    note: 'Confirmed and verified by the server. Keep the transaction reference below for your records.',
+    primary: { label: 'Return to home', to: '/' },
+    secondary: { label: 'View transaction history', to: '/transactions' },
+  },
+  [TRANSACTION_STATUS.FAILED]: {
+    title: 'Payment failed',
+    description: 'The gateway declined or cancelled this payment.',
+    note: 'The gateway did not complete the payment. If your account was debited, contact the gateway with the reference below before trying again.',
+    primary: { label: 'Try again', to: '/checkout' },
+    secondary: { label: 'Return to home', to: '/' },
+  },
+  [TRANSACTION_STATUS.CANCELLED]: {
+    title: 'Payment cancelled',
+    description: 'The payment was cancelled before the gateway confirmed it.',
+    note: 'No verified successful payment exists for this order. You can start a new checkout.',
+    primary: { label: 'Return to checkout', to: '/checkout' },
+    secondary: { label: 'Return to home', to: '/' },
+  },
+  [TRANSACTION_STATUS.PENDING]: {
+    title: 'Payment pending',
+    description:
+      'The gateway has not confirmed a final result yet. This page keeps checking and updates itself.',
+    note: 'Do not pay again while this payment is pending. If it stays pending, check the transaction history or contact the gateway with the reference below.',
+    primary: { label: 'Return to home', to: '/' },
+    secondary: { label: 'View transaction history', to: '/transactions' },
+  },
+}
+
 export default function PaymentResult() {
   const { transactionId } = useParams()
-  const { order, totals, customer, selectedGatewayDetails, lastTransaction } = usePayment()
+  const { order, totals, customer, selectedGatewayDetails, lastTransaction, setLastTransaction } =
+    usePayment()
 
   // Decide the starting view once: we may already hold the transaction in
   // context (normal flow) or we may have to load it from the service
@@ -97,9 +137,73 @@ export default function PaymentResult() {
   const isLoading = view.status === 'loading'
   const isMissing = view.status === 'missing'
 
+  /**
+   * A live payment can still be PENDING when the customer lands here (the
+   * gateway callback may arrive a moment later). Poll the API until it has a
+   * final status, so the page does not tell the customer to pay twice.
+   */
+  useEffect(() => {
+    if (PAYMENT_CONFIG.isMock) return undefined
+    if (view.status !== 'ready') return undefined
+    if (view.transaction?.status !== TRANSACTION_STATUS.PENDING) return undefined
+
+    const id = view.transaction.id
+    let attempts = 0
+    let cancelled = false
+    let timer = null
+
+    const check = async () => {
+      attempts += 1
+
+      try {
+        const result = await getPaymentStatus(id)
+        if (cancelled) return
+
+        setView({ status: 'ready', transaction: result })
+        setLastTransaction(result)
+
+        if (result.status !== TRANSACTION_STATUS.PENDING || attempts >= 24) {
+          clearInterval(timer)
+        }
+      } catch {
+        if (attempts >= 24) clearInterval(timer)
+      }
+    }
+
+    // Check once immediately: the callback has often already completed by the
+    // time the browser lands on this page.
+    check()
+    timer = setInterval(check, 5000)
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [view.status, view.transaction?.id, view.transaction?.status, setLastTransaction])
+
+  const isLiveTransaction = Boolean(transaction) && transaction.simulated === false
+
   const state = useMemo(() => {
     if (!transaction) return null
-    return RESULT_STATES[transaction.status] || RESULT_STATES[TRANSACTION_STATUS.PENDING]
+
+    const status = transaction.status
+    const base = RESULT_STATES[status] || RESULT_STATES[TRANSACTION_STATUS.PENDING]
+
+    if (transaction.simulated === false) {
+      const live = LIVE_STATES[status] || LIVE_STATES[TRANSACTION_STATUS.PENDING]
+
+      if (status === TRANSACTION_STATUS.SUCCESS && transaction.gatewayVerified === false) {
+        return {
+          ...base,
+          ...live,
+          note: 'The gateway reported success, but this result came from its unsigned return redirect. It is recorded without cryptographic verification — keep the reference below.',
+        }
+      }
+
+      return { ...base, ...live }
+    }
+
+    return base
   }, [transaction])
 
   /**
@@ -147,12 +251,12 @@ export default function PaymentResult() {
           </span>
           <h1 className="mt-4 text-lg font-semibold text-slate-900">Transaction not found</h1>
           <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-slate-600">
-            We could not find a demo transaction with reference{' '}
+            We could not find a transaction with reference{' '}
             <span className="font-mono text-slate-800">{transactionId || '—'}</span>. It may have been
-            created in another browser, or the demo data was reset.
+            created in another browser, or the data was reset.
           </p>
           <div className="mt-6 flex flex-col justify-center gap-2.5 sm:flex-row">
-            <Button to="/checkout">Start a new demo</Button>
+            <Button to="/checkout">Start a new payment</Button>
             <Button to="/" variant="secondary">
               Return to home
             </Button>
@@ -192,6 +296,30 @@ export default function PaymentResult() {
               {transaction.reason}
             </p>
           ) : null}
+
+          {isLiveTransaction && transaction.gatewayReference ? (
+            <p className="mx-auto mt-3 max-w-lg text-[12px] text-slate-500">
+              Gateway reference{' '}
+              <span className="font-mono text-slate-700">{transaction.gatewayReference}</span>
+            </p>
+          ) : null}
+
+          {isLiveTransaction && transaction.status === TRANSACTION_STATUS.PENDING ? (
+            <p className="mx-auto mt-2 flex max-w-lg items-center justify-center gap-1.5 text-[12px] text-slate-500">
+              <Loader size="sm" className="text-brand-600" />
+              Waiting for the gateway confirmation…
+            </p>
+          ) : null}
+
+          {isLiveTransaction &&
+          transaction.status === TRANSACTION_STATUS.SUCCESS &&
+          transaction.gatewayVerified === false ? (
+            <p className="mx-auto mt-3 max-w-lg rounded border border-amber-200 bg-amber-50 px-3 py-2 text-left text-[12px] leading-relaxed text-amber-900">
+              <span className="font-semibold">Unverified result.</span> Easypaisa&apos;s final redirect is
+              not signed, so this success was accepted from the browser redirect. Configure the
+              inquiry credentials to store a cryptographically verified result.
+            </p>
+          ) : null}
         </section>
 
         {/* Transaction details */}
@@ -202,7 +330,11 @@ export default function PaymentResult() {
             customer={view_.displayCustomer}
             gateway={view_.displayGateway}
             transaction={transaction}
-            subtitle="Details of this simulated transaction."
+            subtitle={
+              isLiveTransaction
+                ? 'Details of this gateway transaction.'
+                : 'Details of this simulated transaction.'
+            }
           />
         </div>
 

@@ -1,10 +1,18 @@
 import { Order, ORDER_STATUS } from '../models/Order.js'
-import { Transaction, TRANSACTION_STATUS } from '../models/Transaction.js'
+import {
+  Transaction,
+  TRANSACTION_STATUS,
+  TRANSACTION_MODE,
+  GATEWAY,
+} from '../models/Transaction.js'
 import { DEMO_CATALOGUE } from '../config/demoCatalogue.js'
 import { env } from '../config/env.js'
 import { ApiError } from '../utils/ApiError.js'
 import { buildBreakdown } from '../utils/money.js'
-import { generateTransactionReference } from '../utils/generateReference.js'
+import {
+  generateTransactionReference,
+  generateGatewayTxnRef,
+} from '../utils/generateReference.js'
 import { logger } from '../utils/logger.js'
 import { assertGateway, getGatewayAdapter } from './gateways/gatewayFactory.js'
 import { serialiseTransaction, findTransaction } from './transactionService.js'
@@ -13,8 +21,7 @@ import { resolveMockOutcome } from './gateways/mockGateway.js'
 /**
  * Payment service
  *
- * The heart of the backend. It owns every rule that keeps a demo payment
- * honest:
+ * The heart of the backend. It owns every rule that keeps a payment honest:
  *
  *   1. the gateway name must be a known gateway
  *   2. the order must exist and must be payable
@@ -22,8 +29,11 @@ import { resolveMockOutcome } from './gateways/mockGateway.js'
  *   4. an order can only be processed by one request at a time
  *   5. an order that already has a successful payment is never paid again
  *   6. the transaction and the order are updated together
- *   7. the browser never decides the outcome of a payment
+ *   7. in live mode a transaction stays PENDING until the gateway callback has
+ *      been verified — the browser never decides the outcome
  */
+
+const isLiveMode = env.PAYMENT_MODE === 'live'
 
 /**
  * Make sure the development-only outcome control is allowed right now.
@@ -45,8 +55,17 @@ function assertTestControlAllowed(requestedOutcome) {
   return requestedOutcome
 }
 
+/** The environment a live transaction runs against. */
+function environmentFor(gateway) {
+  if (!isLiveMode) return null
+
+  return gateway === GATEWAY.JAZZCASH
+    ? env.JAZZCASH_ENVIRONMENT
+    : env.EASYPAISA_ENVIRONMENT
+}
+
 /**
- * Create (and process) a payment.
+ * Create (and, in live mode, initiate) a payment.
  *
  * @param {{
  *   orderNumber: string,
@@ -56,7 +75,7 @@ function assertTestControlAllowed(requestedOutcome) {
  *   simulatedOutcome?: string,
  *   requestId?: string
  * }} input
- * @returns {Promise<object>} the serialised transaction
+ * @returns {Promise<{transaction: object, redirect: object|null}>}
  */
 export async function createPayment({
   orderNumber,
@@ -176,16 +195,21 @@ export async function createPayment({
   }
 
   // ── 8. Create the pending transaction ───────────────────────────────────
+  const transactionReference = generateTransactionReference()
+  const gatewayTxnRef = isLiveMode ? generateGatewayTxnRef(gatewayName) : null
+
   const transaction = await Transaction.create({
-    transactionReference: generateTransactionReference(),
+    transactionReference,
     orderId: claimed._id,
     orderNumber: claimed.orderNumber,
     gateway: gatewayName,
     amount: breakdown.total,
     currency: claimed.currency,
     status: TRANSACTION_STATUS.PENDING,
-    mode: 'MOCK',
-    simulated: true,
+    mode: isLiveMode ? TRANSACTION_MODE.LIVE : TRANSACTION_MODE.MOCK,
+    simulated: !isLiveMode,
+    gatewayTxnRef,
+    gatewayEnvironment: environmentFor(gatewayName),
     breakdown: {
       subtotal: breakdown.subtotal,
       serviceFee: breakdown.serviceFee,
@@ -210,11 +234,48 @@ export async function createPayment({
       order: { orderNumber: claimed.orderNumber, id: String(claimed._id) },
       customer: claimed.customer,
       gateway: gatewayName,
+      transactionReference,
+      gatewayTxnRef,
       // Only the mock provider understands a forced outcome, and it is only
       // ever set when the development test controls are enabled.
       outcome: requestedOutcome,
     })
 
+    // ── 9a. Hosted checkout: the customer still has to pay at the gateway ──
+    if (result.redirect) {
+      const updated = await Transaction.findOneAndUpdate(
+        { _id: transaction._id },
+        {
+          $set: {
+            status: TRANSACTION_STATUS.PENDING,
+            gatewayTxnRef: result.gatewayTxnRef ?? gatewayTxnRef,
+            gatewayReference: result.gatewayReference ?? null,
+          },
+        },
+        { returnDocument: 'after' },
+      )
+
+      logger.info(
+        {
+          requestId,
+          transactionReference: updated.transactionReference,
+          orderNumber: updated.orderNumber,
+          gateway: gatewayName,
+          status: TRANSACTION_STATUS.PENDING,
+          amountPaisa: breakdown.total,
+          mode: updated.mode,
+          environment: updated.gatewayEnvironment,
+        },
+        'payment initiated at gateway',
+      )
+
+      return {
+        transaction: serialiseTransaction(updated, { order: claimed }),
+        redirect: result.redirect,
+      }
+    }
+
+    // ── 9b. The provider answered immediately (mock mode) ─────────────────
     const finalStatus = Object.values(TRANSACTION_STATUS).includes(result.status)
       ? result.status
       : TRANSACTION_STATUS.FAILED
@@ -226,6 +287,7 @@ export async function createPayment({
           status: finalStatus,
           failureReason: finalStatus === TRANSACTION_STATUS.SUCCESS ? null : result.failureReason,
           gatewayReference: result.gatewayReference ?? null,
+          gatewayTxnRef: result.gatewayTxnRef ?? gatewayTxnRef,
         },
       },
       { returnDocument: 'after' },
@@ -242,12 +304,15 @@ export async function createPayment({
         gateway: gatewayName,
         status: finalStatus,
         amountPaisa: breakdown.total,
-        mode: 'MOCK',
+        mode: updated.mode,
       },
       'payment processed',
     )
 
-    return serialiseTransaction(updated, { order: claimed })
+    return {
+      transaction: serialiseTransaction(updated, { order: claimed }),
+      redirect: null,
+    }
   } catch (error) {
     // The provider failed. The transaction must not stay "pending" forever
     // and the order must be released so the customer can try again.
@@ -300,6 +365,128 @@ async function applyOrderStatus(orderId, transactionStatus) {
       },
     },
   )
+}
+
+/**
+ * Apply a verified gateway callback to a live transaction.
+ *
+ * The lookup uses the reference PayLab sent to the provider, and the amount is
+ * checked against the stored amount before anything is finalised. A callback
+ * that arrives twice is harmless: a final transaction is never changed again.
+ *
+ * @param {{
+ *   gateway: string,
+ *   gatewayTxnRef: string,
+ *   outcome: {
+ *     status: string,
+ *     gatewayReference?: string|null,
+ *     failureReason?: string|null,
+ *     amountPaisa?: number|null,
+ *     verified?: boolean
+ *   }
+ * }} input
+ * @returns {Promise<object>} the serialised transaction
+ */
+export async function completeGatewayPayment({ gateway, gatewayTxnRef, outcome }) {
+  const gatewayName = assertGateway(gateway)
+  const reference = String(gatewayTxnRef || '').trim()
+
+  if (!reference) {
+    throw ApiError.badRequest('VALIDATION_ERROR', 'The gateway transaction reference is missing.')
+  }
+
+  const transaction = await Transaction.findOne({
+    gateway: gatewayName,
+    gatewayTxnRef: reference,
+  })
+
+  if (!transaction) {
+    throw ApiError.notFound(
+      'TRANSACTION_NOT_FOUND',
+      'No transaction matches this gateway reference.',
+    )
+  }
+
+  // A final transaction is never changed by a later callback.
+  if (transaction.status !== TRANSACTION_STATUS.PENDING) {
+    return getPaymentStatus(String(transaction._id))
+  }
+
+  if (
+    outcome?.amountPaisa !== undefined &&
+    outcome?.amountPaisa !== null &&
+    Number(outcome.amountPaisa) !== transaction.amount
+  ) {
+    logger.error(
+      {
+        transactionReference: transaction.transactionReference,
+        expectedAmountPaisa: transaction.amount,
+        receivedAmountPaisa: outcome.amountPaisa,
+      },
+      'gateway callback amount mismatch',
+    )
+
+    throw new ApiError(
+      400,
+      'AMOUNT_MISMATCH',
+      'The amount reported by the gateway does not match the stored amount. ' +
+        'The transaction was not finalised.',
+    )
+  }
+
+  const status = Object.values(TRANSACTION_STATUS).includes(outcome?.status)
+    ? outcome.status
+    : TRANSACTION_STATUS.PENDING
+
+  // Some gateways send an intermediate "pending" notification. Keep the
+  // transaction open but store what is known so far.
+  if (status === TRANSACTION_STATUS.PENDING) {
+    const updated = await Transaction.findOneAndUpdate(
+      { _id: transaction._id, status: TRANSACTION_STATUS.PENDING },
+      {
+        $set: {
+          gatewayReference: outcome?.gatewayReference ?? transaction.gatewayReference ?? null,
+          gatewayVerified: Boolean(outcome?.verified),
+        },
+      },
+      { returnDocument: 'after' },
+    )
+
+    return getPaymentStatus(String((updated ?? transaction)._id))
+  }
+
+  const updated = await Transaction.findOneAndUpdate(
+    { _id: transaction._id, status: TRANSACTION_STATUS.PENDING },
+    {
+      $set: {
+        status,
+        failureReason:
+          status === TRANSACTION_STATUS.SUCCESS ? null : outcome?.failureReason || null,
+        gatewayReference: outcome?.gatewayReference ?? transaction.gatewayReference ?? null,
+        gatewayVerified: Boolean(outcome?.verified),
+      },
+    },
+    { returnDocument: 'after' },
+  )
+
+  // Another request finalised it in the meantime.
+  if (!updated) {
+    return getPaymentStatus(String(transaction._id))
+  }
+
+  await applyOrderStatus(updated.orderId, status)
+
+  logger.info(
+    {
+      transactionReference: updated.transactionReference,
+      gateway: gatewayName,
+      status,
+      gatewayVerified: Boolean(updated.gatewayVerified),
+    },
+    'gateway callback applied',
+  )
+
+  return getPaymentStatus(String(updated._id))
 }
 
 /**
@@ -383,6 +570,7 @@ export function areTestControlsEnabled() {
 
 export default {
   createPayment,
+  completeGatewayPayment,
   getPaymentStatus,
   finaliseMockTransaction,
   areTestControlsEnabled,

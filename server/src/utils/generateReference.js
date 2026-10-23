@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import { formatPktDateTime } from './pkTime.js'
 
 /**
  * Reference generation.
@@ -61,4 +62,28 @@ export function generateSimulatedGatewayReference(gateway) {
  */
 export function generateRequestId() {
   return crypto.randomUUID()
+}
+
+/**
+ * The reference sent to a real gateway.
+ *
+ * Both gateways require letters and digits only:
+ *   JazzCash  pp_TxnRefNo   max 20 characters
+ *   Easypaisa orderRefNum   max 50 characters
+ *
+ * The value is stored on the transaction and is the key a callback is matched
+ * against, so it must be unique per attempt.
+ *
+ * @param {string} gateway canonical gateway name
+ * @returns {string}
+ */
+export function generateGatewayTxnRef(gateway) {
+  const stamp = formatPktDateTime()
+
+  if (gateway === 'JAZZCASH') {
+    // T + yyyyMMddHHmmss + 5 random characters = exactly 20.
+    return `T${stamp}${randomCode(5)}`
+  }
+
+  return `EP${stamp}${randomCode(6)}`
 }

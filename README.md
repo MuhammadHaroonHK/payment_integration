@@ -2,19 +2,25 @@
 
 **PayLab** is a practice project for learning how a mobile payment checkout is built.
 It reproduces the shape of a real JazzCash / Easypaisa checkout — order summary,
-payment method selection, customer form, review step, result screen and transaction
-history — but **every payment is simulated**.
+payment method selection, customer form, review step, hosted gateway page, result
+screen and transaction history.
 
 The project has two parts:
 
 | Folder | What it is |
 | --- | --- |
 | `src/`, `public/`, `index.html` | The **React frontend** (Vite + React + Tailwind CSS) |
-| `server/` | The **Express + MongoDB backend** that simulates the payment gateway |
+| `server/` | The **Express + MongoDB backend** with real hosted-checkout adapters |
 
-Neither part contacts JazzCash or Easypaisa. The backend stores real records in
-MongoDB and simulates the gateway response; the frontend can also run completely
-offline with its own built-in simulator.
+The backend supports two modes:
+
+| Server mode | What happens |
+| --- | --- |
+| `PAYMENT_MODE=mock` | The backend simulates the gateway. No provider is contacted. |
+| `PAYMENT_MODE=live` | The backend builds a signed JazzCash / Easypaisa hosted-checkout request, the customer pays on the provider's page, and the backend records the result after verifying the callback (JazzCash signature, or the Easypaisa inquiry API when configured). |
+
+The frontend can also run completely offline with its own built-in simulator
+(`VITE_PAYMENT_MODE=mock`), with no server and no MongoDB.
 
 > **Full backend documentation → [`server/README.md`](server/README.md)**
 
@@ -26,16 +32,19 @@ offline with its own built-in simulator.
 | --- | --- |
 | Learn a realistic checkout flow | Six screens modelled on real payment apps (Home, Checkout, Review, Result, History, 404) |
 | Practise both gateways | JazzCash and Easypaisa use the exact same UI and the same service interface |
-| Practise every outcome | Success, failure, cancelled and pending are all reachable |
+| Practise every outcome | Success, failure, cancelled and pending are all reachable in mock mode |
 | Learn the server side too | A real Express + Mongoose API with validation, transactions, rate limits and tests |
-| Be gateway-ready | A provider adapter interface means a real gateway can be added without touching the UI |
+| Use the real gateways | Signed hosted-checkout adapters, callback verification and sandbox/live switching |
 
 **What this project deliberately does NOT do**
 
-* It does not process payments and does not move money.
-* It does not contact JazzCash, Easypaisa or any other payment provider.
-* It does not ask for a PIN, OTP, password, card number or any banking credential.
-* It does not store or transmit payment secrets.
+* It never asks for a PIN, OTP, password, card number or any banking credential.
+  Those are entered on the gateway's own page.
+* It never stores gateway secrets in the browser, in MongoDB, or in a log.
+* It does not pretend a simulation is a real payment: every transaction records
+  `mode` (`MOCK` / `LIVE`) and `simulated`, and the UI labels it.
+* It is not production-ready: see [§11](#11-security-limitations) and the backend
+  gap list.
 
 ---
 
@@ -143,12 +152,50 @@ VITE_PAYMENT_MODE=backend
 
 ```bash
 cd server
-npm test             # 48 tests, Vitest + Supertest
+npm test             # 53 tests, Vitest + Supertest
 ```
 
-See [`server/README.md`](server/README.md) for the full API reference, the
-environment variables and the list of what a real gateway integration would
-still need.
+See [`server/README.md`](server/README.md) for the full API reference,
+the environment variables and the callback contract.
+
+### Switching the backend to the real gateways
+
+All merchant credentials live in **`server/.env`** (never in the frontend `.env`).
+
+```env
+# server/.env
+PAYMENT_MODE=live
+PUBLIC_BASE_URL=http://localhost:5000
+
+JAZZCASH_ENVIRONMENT=sandbox
+JAZZCASH_MERCHANT_ID=...
+JAZZCASH_PASSWORD=...
+JAZZCASH_INTEGRITY_SALT=...
+
+EASYPAISA_ENVIRONMENT=sandbox
+EASYPAISA_STORE_ID=...
+EASYPAISA_HASH_KEY=...          # exactly 16, 24 or 32 characters
+# Optional, for a cryptographically verified result:
+EASYPAISA_USERNAME=...
+EASYPAISA_PASSWORD=...
+EASYPAISA_ACCOUNT_NUMBER=...
+# Without the three values above: true accepts the unsigned redirect
+# (gatewayVerified=false); false keeps an unverified SUCCESS pending.
+EASYPAISA_TRUST_REDIRECT=true
+```
+
+Then restart `npm run dev` in `server/`. The server logs which gateway is missing
+credentials and refuses only that gateway with `GATEWAY_NOT_CONFIGURED`; the other
+one keeps working.
+
+The gateway sends the customer's browser back to `PUBLIC_BASE_URL`, so
+`http://localhost:5000` works for local testing. If your merchant portal requires a
+publicly reachable return URL, expose the API with an HTTPS tunnel
+(for example `ngrok http 5000`) and put that URL in `PUBLIC_BASE_URL`.
+
+> The repo ships with **sandbox** hosts. Flip `JAZZCASH_ENVIRONMENT` or
+> `EASYPAISA_ENVIRONMENT` to `production` only when the merchant account is live.
+> Real money can move in production mode.
 
 ---
 
@@ -194,6 +241,7 @@ paylab/
 │   │   │   ├── Button.jsx      # one button for the whole app (variants, sizes, loading)
 │   │   │   ├── Input.jsx       # labelled field + validation message (also exports Select)
 │   │   │   ├── Loader.jsx      # small spinner
+│   │   │   ├── Modal.jsx       # accessible dialog (Escape, backdrop, focus restore, scroll lock)
 │   │   │   ├── StatusBadge.jsx # SUCCESS / FAILED / CANCELLED / PENDING badge
 │   │   │   └── EmptyState.jsx  # "nothing to show" block
 │   │   │
@@ -208,6 +256,7 @@ paylab/
 │   │       ├── CustomerForm.jsx           # name / email / mobile
 │   │       ├── PaymentReview.jsx          # reusable payment summary panel
 │   │       ├── SimulatedOutcomeSelector.jsx # developer test control (see §7)
+│   │       ├── TransactionDetailsModal.jsx  # full record + gateway reference
 │   │       └── TransactionTable.jsx       # table on desktop, cards on mobile
 │   │
 │   ├── pages/
@@ -263,18 +312,18 @@ paylab/
 │   │   │   ├── transactionService.js # listing + lookup
 │   │   │   ├── orderService.js       # server controlled pricing
 │   │   │   └── gateways/
-│   │   │       ├── gatewayFactory.js # picks the adapter
-│   │   │       ├── mockGateway.js     # the working simulator
-│   │   │       ├── jazzcashGateway.js # not implemented, documented
-│   │   │       └── easypaisaGateway.js# not implemented, documented
+│   │   │       ├── gatewayFactory.js # picks the adapter for the active mode
+│   │   │       ├── mockGateway.js     # the simulator (PAYMENT_MODE=mock)
+│   │   │       ├── jazzcashGateway.js # signed hosted checkout + callback verification
+│   │   │       └── easypaisaGateway.js# AES-hashed hosted checkout + inquiry
 │   │   ├── models/              # Order.js · Transaction.js
 │   │   ├── routes/              # payment · transaction · order · health
 │   │   ├── middleware/          # requestId · validateRequest · rateLimit · notFound · errorHandler
 │   │   ├── validators/          # zod schemas
-│   │   ├── utils/               # ApiError · asyncHandler · generateReference · money · logger
+│   │   ├── utils/               # ApiError · asyncHandler · generateReference · money · logger · pkTime · html
 │   │   ├── app.js               # express app (helmet, cors, rate limit, routes)
 │   │   └── server.js            # bootstrap (env -> db -> listen)
-│   ├── tests/                  # health · payment · transaction · testControls
+│   ├── tests/                  # health · payment · transaction · testControls · livePayments
 │   ├── .env.example
 │   ├── eslint.config.js
 │   ├── package.json
@@ -289,15 +338,17 @@ paylab/
 └── README.md
 ```
 
-> **Four files were added** to the requested structure, because they keep a clear
-> separation of concerns: `data/gateways.js` (gateway metadata), `context/PaymentStateContext.js`
-> (the context object, so the provider file only exports a component),
-> `services/transactionStore.js` (the localStorage demo store) and
-> `components/payment/SimulatedOutcomeSelector.jsx` (the developer test control).
+> **A note on the structure:** `data/gateways.js` (gateway metadata),
+> `context/PaymentStateContext.js` (the context object, so the provider file only
+> exports a component), `services/transactionStore.js` (the localStorage demo store),
+> `components/payment/SimulatedOutcomeSelector.jsx` (the developer test control),
+> `components/common/Modal.jsx` (accessible dialog) and
+> `components/payment/TransactionDetailsModal.jsx` (transaction details view) keep a
+> clear separation of concerns instead of growing the page components.
 
 ---
 
-## 7. How the mock payment simulation works
+## 7. How the payment flow works
 
 ### The flow
 
@@ -312,27 +363,35 @@ Home  →  Checkout  →  Payment review  →  Payment result  →  Transaction 
 1. **Checkout** validates the form and stores the order, gateway and customer details.
 2. **Payment review** shows the summary and calls `createPayment()` from `paymentApi.js`.
 3. **`paymentApi.js` decides where the call goes** — this is the only place the
-   application decides between mock and backend:
+   application decides between the offline simulator and the API:
 
    ```js
    export async function createPayment(payload) {
      if (PAYMENT_CONFIG.isMock) {
-       return createMockPayment(payload)          // local simulator
+       return { transaction: await createMockPayment(payload), redirect: null }
      }
      const response = await apiClient.post('/payments/create', payload)
-     return response.data                          // real backend
+     return {
+       transaction: toFrontendTransaction(unwrap(response)),
+       redirect: response.data.redirect ?? null,
+     }
    }
    ```
 
-4. **`mockPaymentService.js`** waits ~1.8 s (so the loading state is visible), then
-   returns a transaction record with the status that was selected in the developer
-   test control, and stores it in the local demo store.
+4. **The backend decides between its own simulator and the real gateway**
+   (`server/.env`: `PAYMENT_MODE=mock` or `PAYMENT_MODE=live`). The browser never
+   decides that.
 
-### The developer test control
+### Mock mode
 
-On the review page there is a clearly marked **"Developer test control — simulated
-result"** panel (dashed amber border, flask icon). It lets you pick the outcome the
-mock service returns:
+* `VITE_PAYMENT_MODE=mock` — `mockPaymentService.js` waits ~1.8 s, returns the
+  selected outcome and stores it in `localStorage`.
+* `VITE_PAYMENT_MODE=backend` + server `PAYMENT_MODE=mock` — `mockGateway.js` on the
+  server simulates the provider and writes a MongoDB transaction.
+
+On the review page, a clearly marked **"Developer test control — simulated result"**
+panel (dashed amber border, flask icon) lets you pick the outcome the mock service
+returns:
 
 | Outcome | Result status | What the result page shows |
 | --- | --- | --- |
@@ -344,17 +403,46 @@ mock service returns:
 This control is a **testing aid of the local simulator only**. It is never sent to
 or received from JazzCash or Easypaisa, and it is not a real gateway feature.
 
-**In backend mode the browser cannot enable it.** The API reports
-capabilities.testControlsEnabled when it creates the demo order, and the server
-rejects any request that tries to force an outcome while its own controls are
-off (TEST_CONTROLS_DISABLED). The controls are always switched off when
-NODE_ENV=production.
+**The browser cannot enable it.** The API reports `capabilities.testControlsEnabled`
+when it creates the demo order, and the server rejects any request that tries to
+force an outcome while its own controls are off (`TEST_CONTROLS_DISABLED`). The
+controls are always switched off when `NODE_ENV=production` or `PAYMENT_MODE=live`.
 
-### Where the mock logic lives
+### Live hosted checkout
 
-All of it is in `src/services/mockPaymentService.js`. **No React component contains
-gateway-processing logic** — components only call `paymentApi.js`, which delegates to
-the mock service or to the HTTP client.
+With `PAYMENT_MODE=live` the browser is only a messenger:
+
+1. `POST /api/payments/create` validates the order and calculates the amount from
+   server-side data. The transaction is stored as `PENDING`, `mode=LIVE`.
+2. The adapter builds a signed form:
+   * **JazzCash** — `pp_*` fields + `pp_SecureHash` (HMAC-SHA256 with the integrity
+     salt), posted to the sandbox/production merchant form.
+   * **Easypaisa** — `merchantHashedReq` (AES-ECB with the 16/24/32-character hash
+     key), posted to the Easypay checkout page.
+3. The frontend auto-submits that form and the customer pays on the gateway's own
+   page. PayLab never sees the PIN, OTP or card details.
+4. The gateway redirects the browser back to the API:
+   * `POST /api/payments/jazzcash/return` — signature is verified before anything
+     changes.
+   * `GET/POST /api/payments/easypaisa/return` — the `auth_token` is forwarded to
+     the confirmation page.
+   * `GET/POST /api/payments/easypaisa/callback` — final status. When the optional
+     inquiry credentials are configured, the server asks Easypaisa for the real
+     state instead of trusting the unsigned redirect.
+5. The server matches the callback to the transaction by `gatewayTxnRef`, checks the
+   amount when the gateway supplies it, and only then moves the transaction (and the
+   order) to its final state.
+6. The browser is redirected to `/payment/result/:id`. A pending result page polls
+   `GET /api/payments/:id/status` until the outcome is final.
+
+A forged or tampered JazzCash callback is rejected with `400 INVALID_SIGNATURE` and
+the transaction stays `PENDING`; there is an automated test for exactly that.
+
+### Where the gateway logic lives
+
+All gateway code is in `server/src/services/gateways/`. **No React component
+contains gateway-processing logic** — components only call `paymentApi.js`, which
+delegates to the offline simulator, the API client or the redirect.
 
 ---
 
@@ -373,7 +461,24 @@ the mock service or to the HTTP client.
    can be filtered by gateway, filtered by status and searched by order number or
    reference.
 
-Every outcome uses the **same** checkout and result UI — only the status changes.
+Every mock outcome uses the **same** checkout and result UI — only the status changes.
+
+### Testing the live sandbox flow
+
+1. Put the sandbox credentials in `server/.env`, set `PAYMENT_MODE=live` and restart
+   the API.
+2. Keep the frontend on `VITE_PAYMENT_MODE=backend`.
+3. Complete the checkout and press **Continue to JazzCash / Easypaisa**. The browser
+   leaves PayLab for the provider's sandbox page.
+4. Pay with the sandbox wallet / test credentials supplied by the provider.
+5. The gateway returns you to the API, which processes the result (checking the
+   JazzCash signature, and using the Easypaisa inquiry API when configured) and
+   redirects to the result page. The transaction is stored with `mode: "LIVE"` and
+   `simulated: false`.
+
+The developer outcome control is hidden in live mode: the gateway decides the result,
+not the browser. If a gateway has no credentials, its payment is refused with
+`GATEWAY_NOT_CONFIGURED` before the browser leaves the site.
 
 ### Local demo data
 
@@ -401,11 +506,19 @@ Base URL: `VITE_API_BASE_URL` (default `http://localhost:5000/api`).
 | --- | --- | --- |
 | `GET` | `/api/health` | API + database status (never exposes secrets) |
 | `GET` | `/api/orders/demo` | Creates a demo order from the server price list |
-| `POST` | `/api/payments/create` | Creates and processes a payment |
+| `POST` | `/api/payments/create` | Starts a payment; in live mode returns the signed gateway form |
 | `GET` | `/api/payments/:transactionId/status` | The status of one transaction |
 | `GET` | `/api/payments/transactions` | Transaction history with filtering + pagination |
 | `GET` | `/api/payments/transactions/:transactionId` | One transaction with its order summary |
+| `POST` | `/api/payments/jazzcash/return` | **Gateway callback** — signed result from JazzCash |
+| `POST` | `/api/payments/jazzcash/ipn` | **Gateway callback** — optional server-to-server IPN |
+| `GET/POST` | `/api/payments/easypaisa/return` | **Gateway callback** — `auth_token` from Easypaisa |
+| `GET/POST` | `/api/payments/easypaisa/callback` | **Gateway callback** — final Easypaisa status |
 | `POST` | `/api/payments/mock/:transactionId/outcome` | **Development only** — force a pending outcome |
+
+The callback endpoints are called by the gateway (and the customer's browser), not by
+the React app. They answer with a `303` redirect to the result page or with a small
+HTML error page.
 
 ### Response envelope
 
@@ -413,6 +526,19 @@ Success:
 
 ```json
 { "success": true, "mode": "MOCK", "message": "Simulated payment completed", "data": { } }
+```
+
+`mode` is `MOCK` (simulator) or `LIVE` (real gateway). In live mode the create
+response also contains:
+
+```json
+{
+  "redirect": {
+    "url": "https://sandbox.jazzcash.com.pk/...",
+    "method": "POST",
+    "fields": { "pp_TxnRefNo": "T...", "pp_SecureHash": "..." }
+  }
+}
 ```
 
 Error:
@@ -423,7 +549,8 @@ Error:
 
 Error codes: `VALIDATION_ERROR`, `ORDER_NOT_FOUND`, `TRANSACTION_NOT_FOUND`,
 `INVALID_GATEWAY`, `INVALID_STATUS_TRANSITION`, `DUPLICATE_PAYMENT`,
-`GATEWAY_NOT_CONFIGURED`, `DATABASE_ERROR`, `RATE_LIMIT_EXCEEDED`,
+`GATEWAY_NOT_CONFIGURED`, `INVALID_SIGNATURE`, `AMOUNT_MISMATCH`,
+`GATEWAY_UNAVAILABLE`, `GATEWAY_ERROR`, `DATABASE_ERROR`, `RATE_LIMIT_EXCEEDED`,
 `INTERNAL_SERVER_ERROR`, `TEST_CONTROLS_DISABLED`.
 
 ### How the frontend talks to it
@@ -439,24 +566,27 @@ Error codes: `VALIDATION_ERROR`, `ORDER_NOT_FOUND`, `TRANSACTION_NOT_FOUND`,
 | `JAZZCASH` | `jazzcash` |
 | paisa (465000) | rupees (4650) |
 
-Because of that layer, **no React component needed to change** when the backend
-was added.
+The service layer also passes the gateway `redirect` through unchanged; the review
+page submits it, while the result page only understands the adapted transaction.
 
 ---
 
-## 10. The two simulation modes
+## 10. The run modes
 
-| | `VITE_PAYMENT_MODE=mock` | `VITE_PAYMENT_MODE=backend` |
-| --- | --- | --- |
-| Where the simulation runs | In the browser (`mockPaymentService.js`) | On the server (`mockGateway.js`) |
-| Needs a server | No | Yes — the API and MongoDB |
-| Where the data lives | `localStorage` on this device | MongoDB |
-| Where the price comes from | `src/data/demoOrder.js` | `server/src/config/demoCatalogue.js` |
-| Reference format | `JC-7F3K9Q` | `PAYLAB-TXN-7F3K9Q2` |
-| Is the amount trusted? | n/a — nothing leaves the browser | **No** — the server recalculates every amount |
+| | Offline simulator | Backend + mock | Backend + live |
+| --- | --- | --- | --- |
+| Frontend `.env` | `VITE_PAYMENT_MODE=mock` | `VITE_PAYMENT_MODE=backend` | `VITE_PAYMENT_MODE=backend` |
+| Server `.env` | — (no server) | `PAYMENT_MODE=mock` | `PAYMENT_MODE=live` |
+| Where the outcome is produced | In the browser (`mockPaymentService.js`) | On the server (`mockGateway.js`) | At JazzCash / Easypaisa |
+| Needs a server + MongoDB | No | Yes | Yes |
+| Where the data lives | `localStorage` | MongoDB | MongoDB |
+| Where the price comes from | `src/data/demoOrder.js` | `server/src/config/demoCatalogue.js` | `server/src/config/demoCatalogue.js` |
+| Reference format | `JC-7F3K9Q` | `PAYLAB-TXN-7F3K9Q2` | `PAYLAB-TXN-…` + `pp_TxnRefNo` / `orderRefNum` |
+| Is the amount trusted? | n/a — nothing leaves the browser | **No** — the server recalculates it | **No** — the server recalculates it |
+| Is a SUCCESS verified? | No — simulated | No — simulated | Yes, by a signed callback (or inquiry) |
 
-Both modes use the **same UI**, the same gateway selection and the same four
-outcomes. Switching is a one line change in `.env`.
+All three modes use the **same UI**. Switching is a configuration change, not a code
+change.
 
 ---
 
@@ -464,31 +594,42 @@ outcomes. Switching is a one line change in `.env`.
 
 ### The frontend
 
-* **No real payment is possible.** The browser cannot talk to JazzCash or Easypaisa
-  safely — the merchant secret would have to be shipped to the client. That is why
-  every real gateway integration needs a server.
-* **`localStorage` is not a database.** Demo records are plain text in the browser.
-  They can be edited, copied or deleted by the user, and they are not protected.
+* **The browser never holds merchant credentials.** In live mode the server builds
+  the signed request; the browser only submits it and later displays the record the
+  server stored. A `VITE_` secret would be public, so none exists.
+* **`localStorage` is not a database.** Offline demo records are plain text in the
+  browser. They can be edited, copied or deleted by the user and are not protected.
 * **`VITE_` variables are public.** Everything prefixed with `VITE_` ends up in the
   JavaScript bundle. Never put credentials there.
-* **Never collect secrets in the frontend.** This project does not ask for a PIN,
-  OTP, password, card number, CVV or banking credential.
+* **Never collect secrets in the frontend.** PayLab does not ask for a PIN, OTP,
+  password, card number, CVV or banking credential; those are entered on the
+  gateway's own hosted page.
 * **Client-side validation is a convenience, not a guarantee.** The backend validates
   every field again.
 
 ### The backend
 
-* **No authentication.** Anyone who can reach the API can see every demo
-  transaction. A production system must scope every query to the authenticated
-  customer or an authorised administrator.
+* **No authentication.** Anyone who can reach the API can see every transaction. A
+  production system must scope every query to the authenticated customer.
 * **The API is a demo.** It must not be exposed to the internet as it is: no HTTPS,
   no CSRF protection, an in-memory rate limiter and a hard coded price list.
-* **The mock controls exist.** They are forced off in production by the
-  configuration, but they must stay off.
+* **The mock controls exist.** They are forced off in production and whenever
+  `PAYMENT_MODE=live`, but they must stay off.
 * **The backend does not collect sensitive credentials** either — no PIN, OTP, card
   data or banking credentials are ever requested, stored or logged.
-* **A `SUCCESS` status is not a verified payment.** It only means the simulator
-  returned `SUCCESS`.
+* **A mock `SUCCESS` is not a payment.** It only means the simulator returned
+  `SUCCESS`; the record is labelled `simulated: true`.
+* **JazzCash successes are verified.** Callbacks are signed with HMAC-SHA256 and a
+  forged hash is rejected before anything changes.
+* **Easypaisa needs the inquiry API for a verified success.** Its final redirect is
+  **not signed**. Configure `EASYPAISA_USERNAME`, `EASYPAISA_PASSWORD` and
+  `EASYPAISA_ACCOUNT_NUMBER` to confirm the real state. Without them,
+  `EASYPAISA_TRUST_REDIRECT=true` accepts the redirect and records
+  `gatewayVerified: false` (the result page warns), while `false` keeps a SUCCESS
+  claim `PENDING`.
+* **An abandoned live checkout can stay `PENDING`.** There is no expiry or
+  reconciliation job yet, so a customer who closes the gateway page leaves the order
+  claimed. A production system needs a scheduled status inquiry plus an expiry policy.
 
 See [`server/README.md`](server/README.md#14-security-limitations-and-production-readiness-gaps)
 for the full production-readiness gap list.

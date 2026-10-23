@@ -20,7 +20,7 @@ export default function PaymentReview({
   customer,
   gateway,
   transaction = null,
-  subtitle = 'Review the details before the demo payment is processed.',
+  subtitle = 'Review the details before the payment is processed.',
 }) {
   const rows = [
     { label: 'Order number', value: order.orderNumber, mono: true },

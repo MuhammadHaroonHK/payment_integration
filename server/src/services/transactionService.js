@@ -40,6 +40,9 @@ export function serialiseTransaction(transaction, { order = null } = {}) {
     mode: transaction.mode,
     failureReason: transaction.failureReason ?? null,
     gatewayReference: transaction.gatewayReference ?? null,
+    gatewayTxnRef: transaction.gatewayTxnRef ?? null,
+    gatewayVerified: Boolean(transaction.gatewayVerified),
+    gatewayEnvironment: transaction.gatewayEnvironment ?? null,
     simulated: Boolean(transaction.simulated),
     breakdown: {
       subtotal: breakdown.subtotal ?? transaction.amount,

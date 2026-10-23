@@ -284,36 +284,143 @@ describe('mock outcome controls', () => {
 })
 
 describe('real gateway adapters', () => {
-  it('the JazzCash adapter refuses to process a payment', async () => {
-    await expect(jazzcashGateway.createPayment({})).rejects.toMatchObject({
+  it('the JazzCash adapter refuses to start a payment without credentials', async () => {
+    await expect(
+      jazzcashGateway.createPayment({
+        amount: 465_000,
+        currency: 'PKR',
+        order: { orderNumber: 'PAYLAB-DEMO-TEST' },
+        transactionReference: 'PAYLAB-TXN-TEST',
+        gatewayTxnRef: 'T2026010112000000001',
+      }),
+    ).rejects.toMatchObject({
       code: 'GATEWAY_NOT_CONFIGURED',
-      statusCode: 501,
+      statusCode: 503,
     })
   })
 
-  it('the Easypaisa adapter refuses to process a payment', async () => {
-    await expect(easypaisaGateway.createPayment({})).rejects.toMatchObject({
+  it('the Easypaisa adapter refuses to start a payment without credentials', async () => {
+    await expect(
+      easypaisaGateway.createPayment({
+        amount: 465_000,
+        currency: 'PKR',
+        order: { orderNumber: 'PAYLAB-DEMO-TEST' },
+        transactionReference: 'PAYLAB-TXN-TEST',
+        gatewayTxnRef: 'EP20260101120000000001',
+      }),
+    ).rejects.toMatchObject({
       code: 'GATEWAY_NOT_CONFIGURED',
-      statusCode: 501,
+      statusCode: 503,
     })
   })
 
-  it('documents what is still required for a real integration', () => {
-    expect(jazzcashGateway.REQUIRED_INTEGRATION_DETAILS.credentials.length).toBeGreaterThan(0)
-    expect(easypaisaGateway.REQUIRED_INTEGRATION_DETAILS.documentation.length).toBeGreaterThan(0)
-    expect(jazzcashGateway.describe().implemented).toBe(false)
+  it('signs a JazzCash payload and rejects a tampered one', () => {
+    const fields = {
+      pp_Amount: '465000',
+      pp_MerchantID: 'MC-TEST',
+      pp_TxnRefNo: 'T2026010112000000001',
+      pp_ReturnURL: 'http://localhost:5000/api/payments/jazzcash/return',
+    }
+
+    const hash = jazzcashGateway.buildSecureHash(fields, 'test-integrity-salt')
+
+    expect(hash).toMatch(/^[A-F0-9]{64}$/)
+    expect(
+      jazzcashGateway.verifySecureHash(
+        { ...fields, pp_SecureHash: hash },
+        'test-integrity-salt',
+      ),
+    ).toBe(true)
+    expect(
+      jazzcashGateway.verifySecureHash(
+        { ...fields, pp_Amount: '1', pp_SecureHash: hash },
+        'test-integrity-salt',
+      ),
+    ).toBe(false)
   })
 
-  it('refuses to start the server with PAYMENT_MODE=live', () => {
+  it('builds a deterministic Easypaisa merchant hash', () => {
+    const fields = {
+      storeId: '12345',
+      amount: '4650.0',
+      postBackURL: 'http://localhost:5000/api/payments/easypaisa/return?tx=EP1',
+      orderRefNum: 'EP1',
+      expiryDate: '20260102 120000',
+      autoRedirect: '1',
+      paymentMethod: '',
+      emailAddr: 'ayesha@example.com',
+      mobileNum: '',
+    }
+
+    const key = '0123456789abcdef'
+    const first = easypaisaGateway.buildHashedRequest(fields, key)
+    const second = easypaisaGateway.buildHashedRequest(fields, key)
+
+    expect(first).toBe(second)
+    expect(first).toMatch(/^[A-Za-z0-9+/]+={0,2}$/)
+    expect(first.length).toBeGreaterThan(20)
+    // The hash key is not valid unless it is 16, 24 or 32 characters.
+    expect(() => easypaisaGateway.buildHashedRequest(fields, 'short')).toThrow(
+      /16, 24 or 32/,
+    )
+  })
+
+  it('formats amounts the way Easypay expects', () => {
+    expect(easypaisaGateway.formatAmount(465_000)).toBe('4650.0')
+    expect(easypaisaGateway.formatAmount(9_950)).toBe('99.50')
+  })
+
+  it('describes both adapters as implemented', () => {
+    expect(jazzcashGateway.describe().implemented).toBe(true)
+    expect(jazzcashGateway.describe().flow).toBe('HOSTED_CHECKOUT')
+    expect(easypaisaGateway.describe().implemented).toBe(true)
+    expect(easypaisaGateway.describe().flow).toBe('HOSTED_CHECKOUT')
+    expect(jazzcashGateway.describe().requiredEnv).toContain('JAZZCASH_INTEGRITY_SALT')
+    expect(easypaisaGateway.describe().requiredEnv).toContain('EASYPAISA_HASH_KEY')
+  })
+
+  it('never trusts an unsigned Easypaisa success unless explicitly allowed', () => {
+    expect(
+      easypaisaGateway.resolveCallbackStatus({
+        status: 'SUCCESS',
+        verified: false,
+        trustRedirect: false,
+      }),
+    ).toEqual({ status: 'PENDING', forcedPending: true })
+
+    expect(
+      easypaisaGateway.resolveCallbackStatus({
+        status: 'SUCCESS',
+        verified: false,
+        trustRedirect: true,
+      }),
+    ).toEqual({ status: 'SUCCESS', forcedPending: false })
+
+    expect(
+      easypaisaGateway.resolveCallbackStatus({
+        status: 'SUCCESS',
+        verified: true,
+        trustRedirect: false,
+      }),
+    ).toEqual({ status: 'SUCCESS', forcedPending: false })
+  })
+
+  it('starts the server with PAYMENT_MODE=live', () => {
     const envModule = pathToFileURL(path.resolve('src/config/env.js')).href
     const code = `import(${JSON.stringify(envModule)}).then(()=>{console.log('NO_ERROR');process.exit(0)}).catch((error)=>{console.log('ERROR:'+error.message);process.exit(3)})`
 
     const result = spawnSync('node', ['--input-type=module', '-e', code], {
       encoding: 'utf8',
-      env: { ...process.env, PAYMENT_MODE: 'live', NODE_ENV: 'development' },
+      env: {
+        ...process.env,
+        PAYMENT_MODE: 'live',
+        NODE_ENV: 'development',
+        JAZZCASH_MERCHANT_ID: '',
+        EASYPAISA_STORE_ID: '',
+      },
     })
 
-    expect(result.status).toBe(3)
-    expect(result.stdout).toContain('not supported yet')
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('NO_ERROR')
   })
 })

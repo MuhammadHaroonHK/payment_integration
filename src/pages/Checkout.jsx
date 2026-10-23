@@ -109,7 +109,7 @@ export default function Checkout() {
                   Payment method
                 </h2>
                 <p className="mt-0.5 text-[12px] text-slate-500">
-                  Select one method to continue with the demo payment.
+                  Select one method to continue.
                 </p>
               </header>
 

@@ -13,8 +13,12 @@ import easypaisaGateway from './easypaisaGateway.js'
  * The rest of the application only ever talks to the adapter interface, so it
  * never contains provider specific code:
  *
- *   createPayment({ amount, currency, order, customer, outcome })
- *   getStatus(gatewayReference, currentStatus)
+ *   createPayment({ amount, currency, order, customer, transactionReference,
+ *                   gatewayTxnRef })
+ *     -> { status, gatewayTxnRef, gatewayReference, failureReason, message,
+ *          redirect? }
+ *   verifyCallback(payload)  (real adapters only)
+ *   getStatus(gatewayTxnRef) (real adapters only)
  *   describe()
  */
 
@@ -25,6 +29,12 @@ export const SUPPORTED_GATEWAYS = Object.values(GATEWAY)
 const CANONICAL_NAMES = {
   JAZZCASH: GATEWAY.JAZZCASH,
   EASYPAISA: GATEWAY.EASYPAISA,
+}
+
+/** The real adapter for each gateway. */
+const LIVE_ADAPTERS = {
+  [GATEWAY.JAZZCASH]: jazzcashGateway,
+  [GATEWAY.EASYPAISA]: easypaisaGateway,
 }
 
 /**
@@ -66,15 +76,25 @@ export function assertGateway(value) {
 }
 
 /**
+ * Whether the real adapter of a gateway has its credentials configured.
+ *
+ * @param {string} gateway canonical gateway name
+ */
+export function isGatewayConfigured(gateway) {
+  const name = assertGateway(gateway)
+
+  if (env.PAYMENT_MODE === 'mock') return true
+  return LIVE_ADAPTERS[name]?.isConfigured() ?? false
+}
+
+/**
  * Get the adapter that handles the given gateway.
  *
  * In mock mode both gateways are handled by the simulator, so the UI, the
  * service layer and the database code stay identical for both payment
  * methods.
  *
- * In live mode the provider specific adapter is returned — and that adapter
- * refuses to work until it has been implemented with the official
- * documentation.
+ * In live mode the provider specific adapter is returned.
  *
  * @param {string} gateway canonical gateway name
  */
@@ -85,40 +105,53 @@ export function getGatewayAdapter(gateway) {
     return mockGateway
   }
 
-  if (name === GATEWAY.JAZZCASH) return jazzcashGateway
-  if (name === GATEWAY.EASYPAISA) return easypaisaGateway
+  const adapter = LIVE_ADAPTERS[name]
 
-  throw new ApiError(400, 'INVALID_GATEWAY', `"${gateway}" is not a supported payment gateway.`)
+  if (!adapter) {
+    throw new ApiError(400, 'INVALID_GATEWAY', `"${gateway}" is not a supported payment gateway.`)
+  }
+
+  return adapter
 }
 
 /**
  * A safe description of the active payment setup (health endpoint).
+ *
+ * Only names, modes and booleans — never a credential.
  */
 export function describePaymentSetup() {
   return {
     mode: env.PAYMENT_MODE.toUpperCase(),
     simulated: env.PAYMENT_MODE === 'mock',
     testControlsEnabled: env.testControlsEnabled,
-    gateways: SUPPORTED_GATEWAYS.map((gateway) => ({
-      gateway,
-      provider: env.PAYMENT_MODE === 'mock' ? 'MOCK' : gateway,
-      displayName:
-        env.PAYMENT_MODE === 'mock'
-          ? gateway === GATEWAY.JAZZCASH
-            ? 'JazzCash (simulated)'
-            : 'Easypaisa (simulated)'
-          : gateway,
-      simulated: env.PAYMENT_MODE === 'mock',
-      implemented: env.PAYMENT_MODE === 'mock',
-      supportedOutcomes:
-        env.PAYMENT_MODE === 'mock'
-          ? ['PENDING', 'SUCCESS', 'FAILED', 'CANCELLED']
-          : [],
-    })),
+    /** Where the gateway sends the customer back. Public by definition. */
+    callbackBaseUrl: env.PUBLIC_BASE_URL,
+    gateways: SUPPORTED_GATEWAYS.map((gateway) => {
+      if (env.PAYMENT_MODE === 'mock') {
+        return {
+          gateway,
+          provider: 'MOCK',
+          displayName:
+            gateway === GATEWAY.JAZZCASH ? 'JazzCash (simulated)' : 'Easypaisa (simulated)',
+          simulated: true,
+          implemented: true,
+          configured: true,
+          environment: null,
+          flow: 'MOCK',
+          supportedOutcomes: ['PENDING', 'SUCCESS', 'FAILED', 'CANCELLED'],
+        }
+      }
+
+      return {
+        gateway,
+        provider: gateway,
+        ...LIVE_ADAPTERS[gateway].describe(),
+      }
+    }),
     note:
       env.PAYMENT_MODE === 'mock'
         ? 'Simulated responses only. No real payment provider is contacted.'
-        : 'A real provider adapter is required before live payments are possible.',
+        : 'Real hosted-checkout adapters are active. Transactions are only finalised after the gateway callback is verified.',
   }
 }
 
@@ -127,5 +160,6 @@ export default {
   normaliseGateway,
   assertGateway,
   getGatewayAdapter,
+  isGatewayConfigured,
   describePaymentSetup,
 }

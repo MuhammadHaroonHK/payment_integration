@@ -14,7 +14,7 @@ import { PaymentContext } from './PaymentStateContext'
  *   - the selected payment gateway
  *   - the customer details
  *   - the simulated outcome used by the mock service
- *   - the last simulated transaction (so the result page survives a refresh)
+ *   - the last transaction (so the result page survives a refresh)
  *
  * The state is mirrored into localStorage so that "Go back and edit" — or a
  * page refresh — never loses what the user already typed. Those stored values
@@ -43,6 +43,13 @@ const initialState = {
   orderError: '',
   /** Whether the development-only outcome control may be used. */
   testControlsEnabled: true,
+  /**
+   * What the server is running: the local simulator or the real gateways.
+   * 'MOCK' in offline mode and when the backend runs PAYMENT_MODE=mock.
+   */
+  serverMode: 'MOCK',
+  /** Which live gateways have credentials on the server. */
+  gatewayCapabilities: { jazzcash: true, easypaisa: true },
 }
 
 /* -------------------------------------------------------------------------- */
@@ -92,6 +99,13 @@ function reducer(state, action) {
 
     case 'SET_TEST_CONTROLS':
       return { ...state, testControlsEnabled: action.enabled }
+
+    case 'SET_SERVER_CAPABILITIES':
+      return {
+        ...state,
+        serverMode: action.mode,
+        gatewayCapabilities: action.gateways,
+      }
 
     /**
      * Start a new checkout session.
@@ -196,7 +210,7 @@ export function PaymentProvider({ children }) {
     state.simulatedOutcome,
   ])
 
-  // Persist the last simulated transaction for the result page.
+  // Persist the last transaction for the result page.
   useEffect(() => {
     if (state.lastTransaction) {
       writeStorage(LAST_TRANSACTION_KEY, state.lastTransaction)
@@ -225,13 +239,23 @@ export function PaymentProvider({ children }) {
     dispatch({ type: 'SET_ORDER_STATUS', status: 'loading' })
 
     try {
-      const { order, testControlsEnabled } = await getDemoOrder(quantity)
+      const {
+        order,
+        testControlsEnabled,
+        mode,
+        gatewayCapabilities,
+      } = await getDemoOrder(quantity)
 
       if (!order) {
         throw new Error('The server did not return a demo order.')
       }
 
       dispatch({ type: 'SET_TEST_CONTROLS', enabled: testControlsEnabled })
+      dispatch({
+        type: 'SET_SERVER_CAPABILITIES',
+        mode,
+        gateways: gatewayCapabilities,
+      })
       dispatch({ type: 'SET_ORDER', order, source: 'backend' })
 
       return order
@@ -275,6 +299,8 @@ export function PaymentProvider({ children }) {
       orderStatus: state.orderStatus,
       orderError: state.orderError,
       testControlsEnabled: state.testControlsEnabled,
+      serverMode: state.serverMode,
+      gatewayCapabilities: state.gatewayCapabilities,
       // actions
       ...actions,
     }),

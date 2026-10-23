@@ -1,6 +1,7 @@
 import { asyncHandler } from '../utils/asyncHandler.js'
 import { createDemoOrder, serialiseOrder } from '../services/orderService.js'
 import { env } from '../config/env.js'
+import { isGatewayConfigured } from '../services/gateways/gatewayFactory.js'
 
 /**
  * Order controller
@@ -28,6 +29,16 @@ export const getDemoOrder = asyncHandler(async (req, res) => {
      */
     capabilities: {
       testControlsEnabled: env.testControlsEnabled,
+      /** MOCK or LIVE — used by the UI to word the review screen correctly. */
+      mode: env.PAYMENT_MODE.toUpperCase(),
+      /**
+       * A live gateway can only be selected when its credentials exist on the
+       * server. The browser never sees the credentials themselves.
+       */
+      gateways: {
+        jazzcash: isGatewayConfigured('JAZZCASH'),
+        easypaisa: isGatewayConfigured('EASYPAISA'),
+      },
     },
   })
 })

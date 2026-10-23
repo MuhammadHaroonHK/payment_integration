@@ -10,6 +10,10 @@ import {
   postCreatePayment,
   getTransactionStatus,
   postMockOutcome,
+  handleJazzCashReturn,
+  postJazzCashIpn,
+  handleEasypaisaReturn,
+  handleEasypaisaCallback,
 } from '../controllers/paymentController.js'
 import { env } from '../config/env.js'
 
@@ -29,6 +33,31 @@ router.post(
   validateRequest(createPaymentSchema, 'body'),
   postCreatePayment,
 )
+
+/* ------------------------------ JazzCash ------------------------------- */
+
+/**
+ * JazzCash posts the signed result here. It is registered before the generic
+ * `/:transactionId/status` route and is never rate limited: the gateway has to
+ * be able to deliver the callback.
+ */
+router.get('/jazzcash/return', handleJazzCashReturn)
+router.post('/jazzcash/return', handleJazzCashReturn)
+
+/** Optional server-to-server notification. */
+router.post('/jazzcash/ipn', postJazzCashIpn)
+
+/* ------------------------------ Easypaisa ------------------------------ */
+
+/**
+ * Easypaisa's two redirects:
+ *   /return    -> auth_token (then the confirmation page)
+ *   /callback  -> final status
+ */
+router.get('/easypaisa/return', handleEasypaisaReturn)
+router.post('/easypaisa/return', handleEasypaisaReturn)
+router.get('/easypaisa/callback', handleEasypaisaCallback)
+router.post('/easypaisa/callback', handleEasypaisaCallback)
 
 /**
  * GET /api/payments/:transactionId/status
